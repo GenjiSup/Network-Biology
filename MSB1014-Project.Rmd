@@ -1,0 +1,373 @@
+---
+title: "MSB1014-Project"
+author: "Carlo Alberto Zani"
+date: "10/1/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(rstudioapi)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+getwd()
+
+library(GEOquery)
+
+gds_data <- getGEO(filename = "GDS2821_full.soft")
+
+expr_data <- Table(gds_data)
+
+subject_info <- Columns(gds_data)
+```
+
+
+```{r differential expression, echo=FALSE}
+
+library(DESeq2)
+library(WGCNA)
+
+# Make sure that rownames are gene identifiers for expr_data and remove duplicates
+expr_data <- expr_data[!duplicated(expr_data$IDENTIFIER), ]
+rownames(expr_data) <- expr_data$IDENTIFIER 
+expr_data <- expr_data[, -1]
+
+# First, check if the order matches by matching column names of expr_data with subject_info$sample
+matching_cols <- match(subject_info$sample, colnames(expr_data))
+
+# Reorder expr_data columns to match the order of subject_info samples
+expr_data <- expr_data[, matching_cols, drop = FALSE]
+
+t_expr_data <- t(expr_data)
+
+t_expr_data[is.na(t_expr_data)] <- apply(t_expr_data, 2, function(x) median(x, na.rm = TRUE))
+
+expr_data <- t(t_expr_data)
+
+expr_data <- expr_data[rowSums(expr_data) > 10, ]
+
+rownames(subject_info) <- subject_info$sample 
+subject_info <- subject_info[, -1]
+
+expr_data <- expr_data[rowSums(expr_data)!=0,]
+
+gsg = goodSamplesGenes(expr_data, verbose = 10000);
+gsg$allOK
+
+# normalized counts from RNA-seq data should be log-transformed
+expr_data_log <- log2(expr_data+1)
+expr_data_log <- as.data.frame(t(expr_data_log))
+
+
+```
+
+
+
+```{r}
+
+subject_info <- Columns(gds_data)
+
+data_filtered = expr_data_log[row.names(expr_data_log) %in% subject_info$sample,]
+
+# Form a data frame analogous to expression data that will hold the clinical traits.
+samples = rownames(data_filtered);
+traitRows = match(samples, subject_info$sample);
+datTraits = subject_info[traitRows, -1];
+rownames(datTraits) = subject_info[traitRows, 1];
+
+datTraits <- datTraits %>%
+  select(-description) %>%
+  mutate(gender = ifelse (gender == "male", 0, 1),
+         disease.state = ifelse (disease.state == "control", 0, 1))
+
+collectGarbage();
+```
+
+
+```{r}
+# Cluster samples
+sampleTree = hclust(dist(data_filtered), method = "average")
+
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(datTraits, signed = FALSE);
+sizeGrWindow(12,12)
+
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree, traitColors,
+                    groupLabels = names(datTraits), cex.dendroLabels = 0.5, 
+                    main = "Sample dendrogram and trait heatmap")
+```
+
+
+
+```{r}
+# Choose a set of soft-thresholding powers
+powers = seq(1,15, by=2)
+
+enableWGCNAThreads()
+# Call the network topology analysis function
+sft = pickSoftThreshold(data_filtered, powerVector = powers, verbose = 5)
+
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n", main = paste("Scale independence"));
+
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels=powers,cex=cex1,col="red");
+
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.85,col="red")
+
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5], xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n", main = paste("Mean connectivity"))
+
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+
+
+```{r}
+net = blockwiseModules(data_filtered, power = 5,
+                       TOMType = "unsigned", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.25,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = "expTOM", 
+                       verbose = 3)
+
+save(net, file = "WGCNA-net.RData")
+```
+
+
+```{r}
+load(file = "WGCNA-net.RData")
+# open a graphics window
+sizeGrWindow(15, 9)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+table(moduleColors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+save(MEs, moduleLabels, moduleColors, geneTree, file = "network-reconstruction.RData")
+```
+
+
+
+```{r}
+# Define numbers of genes and samples
+nGenes = ncol(data_filtered);
+nSamples = nrow(data_filtered);
+# Recalculate MEs with color labels
+MEs0 = moduleEigengenes(data_filtered, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+```
+
+```{r}
+# Get the top 3 indices of modules with the highest absolute correlation to 'disease.state'
+top_3_indices <- order(abs(moduleTraitCor[, "disease.state"]), decreasing = TRUE)[1:3]
+
+# Get the module names for the top 3 correlations
+top_3_modules <- rownames(moduleTraitCor)[top_3_indices]
+
+# Get the correlation values for the top 3
+top_3_correlations <- moduleTraitCor[top_3_indices, "disease.state"]
+
+# Get the corresponding p-values for the top 3 from moduleTraitPvalue
+top_3_p_values <- moduleTraitPvalue[top_3_indices, "disease.state"]
+
+# Print the module names, correlation values, and p-values
+cat("Top 3 modules with highest correlation to disease.state:\n")
+for (i in 1:3) {
+  cat("Module:", top_3_modules[i], "\n")
+  cat("Correlation value:", top_3_correlations[i], "\n")
+  cat("Corresponding p-value:", top_3_p_values[i], "\n\n")
+}
+```
+
+
+```{r}
+# Define variable time containing the time column of datTrait
+disease = as.data.frame(datTraits$disease.state);
+names(disease) = "disease"
+# names (colors) of the modules
+modNames = substring(names(MEs), 3)
+
+geneModuleMembership = as.data.frame(cor(data_filtered, MEs, use = "p"));
+MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+
+names(geneModuleMembership) = paste("MM", modNames, sep="");
+names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+geneTraitSignificance = as.data.frame(cor(data_filtered, disease, use = "p"));
+GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+
+names(geneTraitSignificance) = paste("GS.", names(disease), sep="");
+names(GSPvalue) = paste("p.GS.", names(disease), sep="");
+```
+
+```{r}
+modules = c("green","darkorange","magenta3")
+sizeGrWindow(9, 3);
+  par(mfrow = c(1,3));
+for(module in modules) {
+  column = match(module, modNames);
+  moduleGenes = moduleColors==module;
+  
+  verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]),
+                     abs(geneTraitSignificance[moduleGenes, 1]),
+                     xlab = paste("Module membership (MM,", module, ")", sep=""),
+                     ylab = "Gene significance (GS) for disease",
+                     main = paste("MM vs. GS\n"),
+                     cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, col = module)
+}
+```
+
+
+```{r}
+# Create the starting data frame
+geneInfo0 = data.frame(Gene.ID = colnames(data_filtered),
+                      moduleColor = moduleColors,
+                      geneTraitSignificance,
+                      GSPvalue)
+
+# Order modules by their significance for time
+modOrder = order(-abs(cor(MEs, disease, use = "p")));
+
+# Add module membership information in the chosen order
+for (mod in 1:ncol(geneModuleMembership))
+{
+  oldNames = names(geneInfo0)
+  geneInfo0 = data.frame(geneInfo0, geneModuleMembership[, modOrder[mod]], 
+                         MMPvalue[, modOrder[mod]]);
+  names(geneInfo0) = c(oldNames, paste("MM.", modNames[modOrder[mod]], sep=""),
+                       paste("p.MM.", modNames[modOrder[mod]], sep=""))
+}
+# Order the genes in the geneInfo variable first by module color, then by geneTraitSignificance
+geneOrder = order(geneInfo0$moduleColor, -abs(geneInfo0$GS.disease));
+geneInfo = geneInfo0[geneOrder, ]
+```
+
+
+```{r}
+library(RCy3)
+RCy3::cytoscapePing()
+# installApp('stringApp') 
+genes.black <- geneInfo[geneInfo$moduleColor == "green",]$Gene.ID
+query <- format_csv(as.data.frame(genes.black), col_names=F, quote_escape = "double", eol =",")
+commandsRun(paste0('string protein query cutoff=0.4 newNetName="PPI network" query="',query,'" limit=0'))
+
+# Remove nodes with no connections (isolated nodes)
+selectNodes(createDegreeFilter("degree_filter", c(1,100), predicate="IS_NOT_BETWEEN"))
+
+deleteSelectedNodes()
+
+```
+
+
+
+```{r}
+# Recalculate topological overlap if needed - this takes quite a while, I save the Rdata object and you can directly load it for this example
+TOM = TOMsimilarityFromExpr(data_filtered, power = 6);
+save(TOM, file = "WGCNA-TOM.RData")
+
+# Select modules
+modules = c("green");
+
+# Select module probes
+probes = names(data_filtered)
+inModule = is.finite(match(moduleColors, modules));
+modProbes = probes[inModule];
+# Select the corresponding Topological Overlap
+modTOM = TOM[inModule, inModule];
+dimnames(modTOM) = list(modProbes, modProbes)
+# Export the network into edge and node list files Cytoscape can read
+cyt = exportNetworkToCytoscape(modTOM,
+  edgeFile = paste("CytoscapeInput-edges-", paste(modules, collapse="-"), ".txt", sep=""),
+  nodeFile = paste("CytoscapeInput-nodes-", paste(modules, collapse="-"), ".txt", sep=""),
+  weighted = TRUE,
+  threshold = 0.08,
+  nodeNames = modProbes,
+  nodeAttr = moduleColors[inModule])
+
+edges <- read.table(paste0("CytoscapeInput-edges-", paste(modules, collapse="-"), ".txt"), sep="")
+edges <- edges[,c(1:3)]
+colnames(edges) <- c("source", "target", "weight")
+RCy3::createNetworkFromDataFrames(edges = edges, title=paste0("module", " ", paste(modules, collapse="-")))
+```
+
+
+
+```{r}
+# Create the DESeqDataSet
+dds <- DESeqDataSetFromMatrix(countData = round(as.matrix(expr_data)),
+                               colData = subject_info,
+                               design = ~ disease.state)  # Adjust the design formula as necessary
+
+# Pre-filtering to remove rows with very low counts (optional but recommended)
+dds <- dds[rowSums(counts(dds)) > 10, ]
+
+dds <- DESeq(dds)
+
+results <- results(dds, pAdjustMethod= 'fdr')
+summary(results)
+results <- as.data.frame(results)
+
+results$isDEG <- ifelse(results$padj < 0.01, "UpDEG", "Not DEG")
+results$isDEG <- ifelse(results$log2FoldChange < 0 & results$isDEG == "UpDEG", "DownDEG", results$isDEG)
+
+results <- results %>%
+  filter(is.na(isDEG) == FALSE)
+
+# Create the volcano plot with custom y-axis range
+volcano_plot <- ggplot(results, aes(x = log2FoldChange, y = -log10(padj), color = isDEG)) +
+  geom_point(size = 0.8) +
+  scale_color_manual(values = c("UpDEG" = "red", "DownDEG" = "blue", "Not DEG" = "black")) +
+  labs(x = "log2 Fold Change", y = "-log10(adjusted p-value)", title = "DEGs: padj < 0.01", color = "") 
+
+       
+# Display the plot
+print(volcano_plot)
+
+degs <- results %>%
+  filter(padj < 0.01)
+
+# Filtering expression data for DEGs using row names
+degs_exp <- as.data.frame(expr_data[rownames(expr_data) %in% rownames(degs), ])
+```
+
+
+```{r cars, echo=TRUE}
+
+# BiocManager::install(c("corrr", "RCy3", "igraph"))
+library(RCy3)
+library(corrr)
+library(igraph)
+res.cor <- correlate(t(degs_exp), diagonal = 0)
+res.cor <- as.data.frame(res.cor)
+row.names(res.cor) <- res.cor$term
+res.cor[1] <- NULL
+
+res.cor.filtered <- res.cor
+res.cor.filtered[res.cor.filtered < 0.8] <- 0
+
+graph <- igraph::graph_from_adjacency_matrix(as.matrix(res.cor.filtered), weighted=TRUE)
+createNetworkFromIgraph(graph,title="Correlation_Network",collection="Correlation")
+```
+
