@@ -11,7 +11,9 @@ library(readr)
 library(dplyr)
 library(ggplot2)
 library(tidyr)
-library(stringr)
+library(string)
+
+# https://www.ncbi.nlm.nih.gov/sites/GDSbrowser?acc=GDS2821
 
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 getwd()
