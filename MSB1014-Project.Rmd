@@ -11,7 +11,7 @@ library(readr)
 library(dplyr)
 library(ggplot2)
 library(tidyr)
-library(string)
+
 
 # https://www.ncbi.nlm.nih.gov/sites/GDSbrowser?acc=GDS2821
 
@@ -224,6 +224,8 @@ names(geneTraitSignificance) = paste("GS.", names(disease), sep="");
 names(GSPvalue) = paste("p.GS.", names(disease), sep="");
 ```
 
+
+
 ```{r}
 modules = c("green","darkorange","magenta3")
 sizeGrWindow(9, 3);
@@ -270,7 +272,10 @@ geneInfo = geneInfo0[geneOrder, ]
 ```{r}
 library(RCy3)
 RCy3::cytoscapePing()
-# installApp('stringApp') 
+
+if("cytargetlinker" %in% commandsHelp("")) print("Success: the CyTargetLinker app is installed") else print("Warning: CyTargetLinker app is not installed. Please install the CyTargetLinker app before proceeding.")
+if("string" %in% commandsHelp("")) print("Success: the STRING app is installed") else print("Warning: STRING app is not installed. Please install the STRING app before proceeding.")
+
 genes.black <- geneInfo[geneInfo$moduleColor == "green",]$Gene.ID
 query <- format_csv(as.data.frame(genes.black), col_names=F, quote_escape = "double", eol =",")
 commandsRun(paste0('string protein query cutoff=0.4 newNetName="PPI network" query="',query,'" limit=0'))
@@ -280,38 +285,28 @@ selectNodes(createDegreeFilter("degree_filter", c(1,100), predicate="IS_NOT_BETW
 
 deleteSelectedNodes()
 
+
+drugBank <- file.path(getwd(),"drugbank4-2-approved.xgmml")
+
+CTLextend.cmd = paste('cytargetlinker extend idAttribute="display name" linkSetFiles="', drugBank, '" network=current', sep="")
+commandsRun(CTLextend.cmd)
+layoutNetwork()
+
+vizstyle.file <- file.path(getwd(),"use-case1-style.xml")
+LoadStyle.cmd = paste('vizmap load file file="',vizstyle.file,'"', sep="")
+commandsRun(LoadStyle.cmd)
+
+setVisualStyle("CTL Disease Compound Network")
+
+selectNodes(c("drug"), by.col = 'CTL.type')
+selectFirstNeighbors(direction = "outgoing")
+invertNodeSelection()
+
+deleteSelectedNodes()
+layoutNetwork()
+
 ```
 
-
-
-```{r}
-# Recalculate topological overlap if needed - this takes quite a while, I save the Rdata object and you can directly load it for this example
-TOM = TOMsimilarityFromExpr(data_filtered, power = 6);
-save(TOM, file = "WGCNA-TOM.RData")
-
-# Select modules
-modules = c("green");
-
-# Select module probes
-probes = names(data_filtered)
-inModule = is.finite(match(moduleColors, modules));
-modProbes = probes[inModule];
-# Select the corresponding Topological Overlap
-modTOM = TOM[inModule, inModule];
-dimnames(modTOM) = list(modProbes, modProbes)
-# Export the network into edge and node list files Cytoscape can read
-cyt = exportNetworkToCytoscape(modTOM,
-  edgeFile = paste("CytoscapeInput-edges-", paste(modules, collapse="-"), ".txt", sep=""),
-  nodeFile = paste("CytoscapeInput-nodes-", paste(modules, collapse="-"), ".txt", sep=""),
-  weighted = TRUE,
-  threshold = 0.08,
-  nodeNames = modProbes,
-  nodeAttr = moduleColors[inModule])
-
-edges <- read.table(paste0("CytoscapeInput-edges-", paste(modules, collapse="-"), ".txt"), sep="")
-edges <- edges[,c(1:3)]
-colnames(edges) <- c("source", "target", "weight")
-RCy3::createNetworkFromDataFrames(edges = edges, title=paste0("module", " ", paste(modules, collapse="-")))
 ```
 
 
@@ -331,11 +326,46 @@ results <- results(dds, pAdjustMethod= 'fdr')
 summary(results)
 results <- as.data.frame(results)
 
-results$isDEG <- ifelse(results$padj < 0.01, "UpDEG", "Not DEG")
+results$isDEG <- ifelse(results$padj < 0.05, "UpDEG", "Not DEG")
 results$isDEG <- ifelse(results$log2FoldChange < 0 & results$isDEG == "UpDEG", "DownDEG", results$isDEG)
 
+
+# Load the package
+library(writexl)
+
+# Filter the results
 results <- results %>%
+  mutate(gene_name = rownames(results)) %>%
   filter(is.na(isDEG) == FALSE)
+
+# Save the results as an Excel file
+write_xlsx(results, "filtered_results.xlsx")
+
+degs <- file.path(getwd(), "filtered_results.xlsx")
+import.table1.cmd = paste('table import file file="',degs,'"  KeyColumnForMappingNetworkList="display name" keyColumnIndex=1 startLoadRow=1 firstRowAsColumnNames=true', sep="")
+commandsRun(import.table1.cmd)
+
+selectNodes(c("initial"), by.col = 'CTL.type')
+genes <- getSelectedNodes()
+clearSelection()
+
+genes <- gsub("9606\\.", "", genes)
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+
+# Convert ENSP to ENSG
+sig_gene_converted <- bitr(results$gene_name, 
+                            fromType="SYMBOL",  # Change this to the correct type for protein
+                            toType="ENSEMBLPROT",
+                            OrgDb=org.Hs.eg.db)
+
+# Filter the original sig_gene for matching ENSG IDs
+matching_genes <- sig_gene %>%
+  filter(ENSEMBL %in% sig_gene_converted$ENSEMBL)
+
+# View the matching genes
+print(matching_genes)
 
 # Create the volcano plot with custom y-axis range
 volcano_plot <- ggplot(results, aes(x = log2FoldChange, y = -log10(padj), color = isDEG)) +
@@ -353,23 +383,3 @@ degs <- results %>%
 # Filtering expression data for DEGs using row names
 degs_exp <- as.data.frame(expr_data[rownames(expr_data) %in% rownames(degs), ])
 ```
-
-
-```{r cars, echo=TRUE}
-
-# BiocManager::install(c("corrr", "RCy3", "igraph"))
-library(RCy3)
-library(corrr)
-library(igraph)
-res.cor <- correlate(t(degs_exp), diagonal = 0)
-res.cor <- as.data.frame(res.cor)
-row.names(res.cor) <- res.cor$term
-res.cor[1] <- NULL
-
-res.cor.filtered <- res.cor
-res.cor.filtered[res.cor.filtered < 0.8] <- 0
-
-graph <- igraph::graph_from_adjacency_matrix(as.matrix(res.cor.filtered), weighted=TRUE)
-createNetworkFromIgraph(graph,title="Correlation_Network",collection="Correlation")
-```
-
