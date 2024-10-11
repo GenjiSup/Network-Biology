@@ -1,2 +1,2 @@
 # Network-Biology
-Parkinson's and drug repurposing analysis using WGCNA, network clustering and link prediction
+This analysis explores drug repurposing for Parkinson's disease by leveraging Weighted Gene Co-expression Network Analysis (WGCNA) to infer networks from Parkinson's gene expression data. The resulting co-expression network is imported into Cytoscape as a protein-protein interaction (PPI) network. Drug-protein interactions are integrated using the cyTargetLinker tool. At the same time, fold-change scores are mapped onto the network to visualize upregulated and downregulated genes, aiding in identifying potential therapeutic targets.
