@@ -3,198 +3,213 @@ title: "MSB1014-Project"
 author: "Carlo Alberto Zani"
 date: "10/1/2024"
 output: html_document
+data: https://www.ncbi.nlm.nih.gov/sites/GDSbrowser?acc=GDS2821
 ---
 
 ```{r setup, include=FALSE}
+# List of required packages
+required_packages <- c(
+  "rstudioapi", "readr", "dplyr", "ggplot2", "tidyr", # Data manipulation and visualization
+  "GEOquery", "DESeq2", "WGCNA", "RCy3", # Bioinformatics and network analysis
+  "writexl", "org.Hs.eg.db", "clusterProfiler" # Data export and gene annotation
+)
+
+# Check and install missing packages
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])] # Identify missing packages
+if (length(new_packages)) {
+  install.packages(new_packages) # Install missing packages
+}
+
+# Load required libraries
 library(rstudioapi)
 library(readr)
 library(dplyr)
 library(ggplot2)
 library(tidyr)
-
-
-# https://www.ncbi.nlm.nih.gov/sites/GDSbrowser?acc=GDS2821
-
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-getwd()
-
 library(GEOquery)
-
-gds_data <- getGEO(filename = "GDS2821_full.soft")
-
-expr_data <- Table(gds_data)
-
-subject_info <- Columns(gds_data)
-```
-
-
-```{r differential expression, echo=FALSE}
-
 library(DESeq2)
 library(WGCNA)
+library(RCy3)
+library(writexl)
+library(org.Hs.eg.db)
+library(clusterProfiler)
 
-# Make sure that rownames are gene identifiers for expr_data and remove duplicates
-expr_data <- expr_data[!duplicated(expr_data$IDENTIFIER), ]
-rownames(expr_data) <- expr_data$IDENTIFIER 
+# Set working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+# Load the GEO dataset (GDS2821)
+gds_data <- getGEO(filename = "GDS2821_full.soft")
+
+# Extract expression data and subject info
+expression_data <- Table(gds_data)
+expression_data <- expression_data[expression_data$`Gene symbol` != "", ]
+subject_info <- Columns(gds_data)
+```
+
+
+```{r data filtering, echo=FALSE}
+# Ensure unique identifiers and prepare expression data
+expr_data <- expression_data[!duplicated(expression_data$IDENTIFIER), ]
+rownames(expr_data) <- expr_data$IDENTIFIER
 expr_data <- expr_data[, -1]
 
-# First, check if the order matches by matching column names of expr_data with subject_info$sample
+# Reorder columns of expr_data to match the order of subject_info samples
 matching_cols <- match(subject_info$sample, colnames(expr_data))
-
-# Reorder expr_data columns to match the order of subject_info samples
 expr_data <- expr_data[, matching_cols, drop = FALSE]
 
+# Transpose expression data and handle missing values with median imputation
 t_expr_data <- t(expr_data)
-
 t_expr_data[is.na(t_expr_data)] <- apply(t_expr_data, 2, function(x) median(x, na.rm = TRUE))
-
 expr_data <- t(t_expr_data)
 
+# Remove genes with low expression
 expr_data <- expr_data[rowSums(expr_data) > 10, ]
 
-rownames(subject_info) <- subject_info$sample 
+# Prepare subject info and clean it
+rownames(subject_info) <- subject_info$sample
 subject_info <- subject_info[, -1]
 
-expr_data <- expr_data[rowSums(expr_data)!=0,]
-
-gsg = goodSamplesGenes(expr_data, verbose = 10000);
+# Check for good samples and genes
+gsg <- goodSamplesGenes(expr_data, verbose = 10000)
 gsg$allOK
 
-# normalized counts from RNA-seq data should be log-transformed
-expr_data_log <- log2(expr_data+1)
+# Log transformation for normalized RNA-seq data
+expr_data_log <- log2(expr_data + 1)
 expr_data_log <- as.data.frame(t(expr_data_log))
 
+# Filter the data to include only samples present in the subject_info
+data_filtered <- expr_data_log[row.names(expr_data_log) %in% subject_info$sample, ]
 
-```
+# Form a clinical traits data frame matching the filtered data
+samples <- rownames(data_filtered)
+traitRows <- match(samples, subject_info$sample)
+datTraits <- subject_info[traitRows, -1]
+rownames(datTraits) <- subject_info[traitRows, 1]
 
-
-
-```{r}
-
-subject_info <- Columns(gds_data)
-
-data_filtered = expr_data_log[row.names(expr_data_log) %in% subject_info$sample,]
-
-# Form a data frame analogous to expression data that will hold the clinical traits.
-samples = rownames(data_filtered);
-traitRows = match(samples, subject_info$sample);
-datTraits = subject_info[traitRows, -1];
-rownames(datTraits) = subject_info[traitRows, 1];
-
+# Convert categorical data to binary variables
 datTraits <- datTraits %>%
   select(-description) %>%
-  mutate(gender = ifelse (gender == "male", 0, 1),
-         disease.state = ifelse (disease.state == "control", 0, 1))
+  mutate(
+    gender = ifelse(gender == "male", 0, 1),
+    disease.state = ifelse(disease.state == "control", 0, 1)
+  )
 
-collectGarbage();
+# Free up memory
+collectGarbage()
 ```
 
 
-```{r}
-# Cluster samples
-sampleTree = hclust(dist(data_filtered), method = "average")
 
-# Convert traits to a color representation: white means low, red means high, grey means missing entry
-traitColors = numbers2colors(datTraits, signed = FALSE);
-sizeGrWindow(12,12)
+```{r clustering of the samples, echo=FALSE}
+# Cluster the samples based on expression data using hierarchical clustering
+sampleTree <- hclust(dist(data_filtered), method = "average")
 
-# Plot the sample dendrogram and the colors underneath.
+# Convert traits to color representation: white (low), red (high), grey (missing)
+traitColors <- numbers2colors(datTraits, signed = FALSE)
+
+# Plot the sample dendrogram and trait heatmap
 plotDendroAndColors(sampleTree, traitColors,
-                    groupLabels = names(datTraits), cex.dendroLabels = 0.5, 
-                    main = "Sample dendrogram and trait heatmap")
+  groupLabels = names(datTraits), cex.dendroLabels = 0.5,
+  main = "Sample dendrogram and trait heatmap"
+)
 ```
 
 
 
-```{r}
-# Choose a set of soft-thresholding powers
-powers = seq(1,15, by=2)
+```{r plots for power selction, echo=FALSE}
+# Choose a set of soft-thresholding powers for network construction
+powers <- seq(1, 15, by = 2)
 
+# Enable multi-threading for WGCNA
 enableWGCNAThreads()
-# Call the network topology analysis function
-sft = pickSoftThreshold(data_filtered, powerVector = powers, verbose = 5)
 
-# Plot the results:
-sizeGrWindow(9, 5)
-par(mfrow = c(1,2));
-cex1 = 0.9;
+# Perform network topology analysis to select the soft-thresholding power
+sft <- pickSoftThreshold(data_filtered, powerVector = powers, verbose = 5)
+
+# Plot the results of the analysis
+par(mfrow = c(1, 2))
+cex1 <- 0.9
 
 # Scale-free topology fit index as a function of the soft-thresholding power
-plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n", main = paste("Scale independence"));
-
-text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels=powers,cex=cex1,col="red");
-
-# this line corresponds to using an R^2 cut-off of h
-abline(h=0.85,col="red")
+plot(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+  xlab = "Soft Threshold (power)", ylab = "Scale Free Topology Model Fit, signed R^2",
+  type = "n", main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+  labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.85, col = "red")
 
 # Mean connectivity as a function of the soft-thresholding power
-plot(sft$fitIndices[,1], sft$fitIndices[,5], xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n", main = paste("Mean connectivity"))
-
-text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+plot(sft$fitIndices[, 1], sft$fitIndices[, 5],
+  xlab = "Soft Threshold (power)", ylab = "Mean Connectivity", type = "n",
+  main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1], sft$fitIndices[, 5], labels = powers, cex = cex1, col = "red")
 ```
 
 
 
-```{r}
-net = blockwiseModules(data_filtered, power = 5,
-                       TOMType = "unsigned", minModuleSize = 30,
-                       reassignThreshold = 0, mergeCutHeight = 0.25,
-                       numericLabels = TRUE, pamRespectsDendro = FALSE,
-                       saveTOMs = TRUE,
-                       saveTOMFileBase = "expTOM", 
-                       verbose = 3)
+```{r WGCNA, echo=FALSE}
+# Perform WGCNA with the selected power and blockwise modules approach
+net <- blockwiseModules(data_filtered,
+  power = 5,
+  TOMType = "unsigned", minModuleSize = 30,
+  reassignThreshold = 0, mergeCutHeight = 0.25,
+  numericLabels = TRUE, pamRespectsDendro = FALSE,
+  verbose = 3
+)
 
+# Save the results of network construction
 save(net, file = "WGCNA-net.RData")
 ```
 
 
-```{r}
+```{r WGCNA dendrogram, echo=FALSE}
+# Load the saved network data
 load(file = "WGCNA-net.RData")
-# open a graphics window
-sizeGrWindow(15, 9)
-# Convert labels to colors for plotting
-mergedColors = labels2colors(net$colors)
-# Plot the dendrogram and the module colors underneath
+
+# Convert module labels to colors for visualization
+mergedColors <- labels2colors(net$colors)
+
+# Plot the dendrogram with module colors
 plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
-                    "Module colors",
-                    dendroLabels = FALSE, hang = 0.03,
-                    addGuide = TRUE, guideHang = 0.05)
+  "Module colors",
+  dendroLabels = FALSE, hang = 0.03,
+  addGuide = TRUE, guideHang = 0.05
+)
 
-moduleLabels = net$colors
-moduleColors = labels2colors(net$colors)
-table(moduleColors)
-MEs = net$MEs;
-geneTree = net$dendrograms[[1]];
-save(MEs, moduleLabels, moduleColors, geneTree, file = "network-reconstruction.RData")
+# Save module-related data for further analysis
+moduleLabels <- net$colors
+moduleColors <- labels2colors(net$colors)
+MEs <- net$MEs
+geneTree <- net$dendrograms[[1]]
 ```
 
 
 
-```{r}
+```{r MEs, echo=FALSE}
 # Define numbers of genes and samples
-nGenes = ncol(data_filtered);
-nSamples = nrow(data_filtered);
-# Recalculate MEs with color labels
-MEs0 = moduleEigengenes(data_filtered, moduleColors)$eigengenes
-MEs = orderMEs(MEs0)
-moduleTraitCor = cor(MEs, datTraits, use = "p");
-moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+nGenes <- ncol(data_filtered) # Number of genes
+nSamples <- nrow(data_filtered) # Number of samples
+
+# Recalculate module eigengenes (MEs) and order them
+MEs0 <- moduleEigengenes(data_filtered, moduleColors)$eigengenes
+MEs <- orderMEs(MEs0)
+
+# Compute correlation between module eigengenes and traits
+moduleTraitCor <- cor(MEs, datTraits, use = "p")
+moduleTraitPvalue <- corPvalueStudent(moduleTraitCor, nSamples)
 ```
 
-```{r}
-# Get the top 3 indices of modules with the highest absolute correlation to 'disease.state'
+```{r top 3, echo=FALSE}
+# Get the top 3 modules most correlated with 'disease.state'
 top_3_indices <- order(abs(moduleTraitCor[, "disease.state"]), decreasing = TRUE)[1:3]
-
-# Get the module names for the top 3 correlations
 top_3_modules <- rownames(moduleTraitCor)[top_3_indices]
-
-# Get the correlation values for the top 3
 top_3_correlations <- moduleTraitCor[top_3_indices, "disease.state"]
-
-# Get the corresponding p-values for the top 3 from moduleTraitPvalue
 top_3_p_values <- moduleTraitPvalue[top_3_indices, "disease.state"]
 
-# Print the module names, correlation values, and p-values
+# Display the top 3 modules with their correlation values and p-values
 cat("Top 3 modules with highest correlation to disease.state:\n")
 for (i in 1:3) {
   cat("Module:", top_3_modules[i], "\n")
@@ -204,134 +219,141 @@ for (i in 1:3) {
 ```
 
 
-```{r}
-# Define variable time containing the time column of datTrait
-disease = as.data.frame(datTraits$disease.state);
-names(disease) = "disease"
-# names (colors) of the modules
-modNames = substring(names(MEs), 3)
+```{r gene-disease correlation, echo=FALSE}
+# Calculate gene-module membership and gene-trait significance
+disease <- as.data.frame(datTraits$disease.state)
+names(disease) <- "disease"
 
-geneModuleMembership = as.data.frame(cor(data_filtered, MEs, use = "p"));
-MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+modNames <- substring(names(MEs), 3) # Module names without "ME" prefix
 
-names(geneModuleMembership) = paste("MM", modNames, sep="");
-names(MMPvalue) = paste("p.MM", modNames, sep="");
+# Correlation of genes with module eigengenes (module membership) and their significance
+geneModuleMembership <- as.data.frame(cor(data_filtered, MEs, use = "p"))
+MMPvalue <- as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples))
 
-geneTraitSignificance = as.data.frame(cor(data_filtered, disease, use = "p"));
-GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+# Correlation of genes with the disease trait (gene significance)
+geneTraitSignificance <- as.data.frame(cor(data_filtered, disease, use = "p"))
+GSPvalue <- as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples))
 
-names(geneTraitSignificance) = paste("GS.", names(disease), sep="");
-names(GSPvalue) = paste("p.GS.", names(disease), sep="");
+# Renaming columns for clarity
+names(geneModuleMembership) <- paste("MM", modNames, sep = "")
+names(MMPvalue) <- paste("p.MM", modNames, sep = "")
+names(geneTraitSignificance) <- paste("GS.", names(disease), sep = "")
+names(GSPvalue) <- paste("p.GS.", names(disease), sep = "")
 ```
 
 
 
-```{r}
-modules = c("green","darkorange","magenta3")
-sizeGrWindow(9, 3);
-  par(mfrow = c(1,3));
-for(module in modules) {
-  column = match(module, modNames);
-  moduleGenes = moduleColors==module;
-  
+```{r plot the correlations top 3, echo=FALSE}
+# Plot module membership vs. gene significance for selected modules
+modules <- c("green", "steelblue", "grey60")
+sizeGrWindow(9, 3)
+par(mfrow = c(1, 3))
+
+for (module in modules) {
+  column <- match(module, modNames) # Find the column corresponding to the module
+  moduleGenes <- moduleColors == module # Select genes in the current module
+
+  # Scatterplot of module membership vs. gene significance for disease
   verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]),
-                     abs(geneTraitSignificance[moduleGenes, 1]),
-                     xlab = paste("Module membership (MM,", module, ")", sep=""),
-                     ylab = "Gene significance (GS) for disease",
-                     main = paste("MM vs. GS\n"),
-                     cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, col = module)
+    abs(geneTraitSignificance[moduleGenes, 1]),
+    xlab = paste("Module membership (MM,", module, ")", sep = ""),
+    ylab = "Gene significance (GS) for disease",
+    main = paste("MM vs. GS\n"),
+    cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, col = module
+  )
 }
 ```
 
 
-```{r}
-# Create the starting data frame
-geneInfo0 = data.frame(Gene.ID = colnames(data_filtered),
-                      moduleColor = moduleColors,
-                      geneTraitSignificance,
-                      GSPvalue)
+```{r final dataframe, echo=FALSE}
+# Create a data frame with gene information, including module membership and significance
+geneInfo0 <- data.frame(
+  Gene.ID = colnames(data_filtered),
+  moduleColor = moduleColors,
+  geneTraitSignificance,
+  GSPvalue
+)
 
-# Order modules by their significance for time
-modOrder = order(-abs(cor(MEs, disease, use = "p")));
+# Order modules by their correlation with the disease trait
+modOrder <- order(-abs(cor(MEs, disease, use = "p")))
 
-# Add module membership information in the chosen order
-for (mod in 1:ncol(geneModuleMembership))
-{
-  oldNames = names(geneInfo0)
-  geneInfo0 = data.frame(geneInfo0, geneModuleMembership[, modOrder[mod]], 
-                         MMPvalue[, modOrder[mod]]);
-  names(geneInfo0) = c(oldNames, paste("MM.", modNames[modOrder[mod]], sep=""),
-                       paste("p.MM.", modNames[modOrder[mod]], sep=""))
+# Add module membership and p-value information to the gene info
+for (mod in 1:ncol(geneModuleMembership)) {
+  oldNames <- names(geneInfo0)
+  geneInfo0 <- data.frame(
+    geneInfo0, geneModuleMembership[, modOrder[mod]],
+    MMPvalue[, modOrder[mod]]
+  )
+  names(geneInfo0) <- c(
+    oldNames, paste("MM.", modNames[modOrder[mod]], sep = ""),
+    paste("p.MM.", modNames[modOrder[mod]], sep = "")
+  )
 }
-# Order the genes in the geneInfo variable first by module color, then by geneTraitSignificance
-geneOrder = order(geneInfo0$moduleColor, -abs(geneInfo0$GS.disease));
-geneInfo = geneInfo0[geneOrder, ]
+
+# Order genes by module color and gene significance for disease
+geneOrder <- order(geneInfo0$moduleColor, -abs(geneInfo0$GS.disease))
+geneInfo <- geneInfo0[geneOrder, ]
 ```
 
 
-```{r}
-library(RCy3)
+```{r cytoscape, echo=FALSE}
+# Cytoscape commands to analyze and visualize protein-protein interaction (PPI) network
 RCy3::cytoscapePing()
 
-if("cytargetlinker" %in% commandsHelp("")) print("Success: the CyTargetLinker app is installed") else print("Warning: CyTargetLinker app is not installed. Please install the CyTargetLinker app before proceeding.")
-if("string" %in% commandsHelp("")) print("Success: the STRING app is installed") else print("Warning: STRING app is not installed. Please install the STRING app before proceeding.")
+# Check if required Cytoscape apps are installed
+if ("cytargetlinker" %in% commandsHelp("")) print("Success: CyTargetLinker app is installed") else print("Warning: CyTargetLinker app is not installed.")
+if ("string" %in% commandsHelp("")) print("Success: STRING app is installed") else print("Warning: STRING app is not installed.")
 
-genes.black <- geneInfo[geneInfo$moduleColor == "green",]$Gene.ID
-query <- format_csv(as.data.frame(genes.black), col_names=F, quote_escape = "double", eol =",")
-commandsRun(paste0('string protein query cutoff=0.4 newNetName="PPI network" query="',query,'" limit=0'))
+# Query STRING database for PPI network of genes in the "green" module
+genes.green <- geneInfo[geneInfo$moduleColor == "green", ]$Gene.ID
+query <- format_csv(as.data.frame(genes.green), col_names = F, quote_escape = "double", eol = ",")
+commandsRun(paste0('string protein query cutoff=0.4 newNetName="PPI network" query="', query, '" limit=0'))
 
-# Remove nodes with no connections (isolated nodes)
-selectNodes(createDegreeFilter("degree_filter", c(1,100), predicate="IS_NOT_BETWEEN"))
-
+# Clean the network by removing isolated nodes
+selectNodes(createDegreeFilter("degree_filter", c(1, 100), predicate = "IS_NOT_BETWEEN"))
 deleteSelectedNodes()
 
-
-drugBank <- file.path(getwd(),"drugbank4-2-approved.xgmml")
-
-CTLextend.cmd = paste('cytargetlinker extend idAttribute="display name" linkSetFiles="', drugBank, '" network=current', sep="")
+# Extend the network with DrugBank data and customize visualization style
+drugBank <- file.path(getwd(), "drugbank4-2-approved.xgmml")
+CTLextend.cmd <- paste('cytargetlinker extend idAttribute="display name" linkSetFiles="', drugBank, '" network=current', sep = "")
 commandsRun(CTLextend.cmd)
 layoutNetwork()
 
-vizstyle.file <- file.path(getwd(),"use-case1-style.xml")
-LoadStyle.cmd = paste('vizmap load file file="',vizstyle.file,'"', sep="")
-commandsRun(LoadStyle.cmd)
-
-setVisualStyle("CTL Disease Compound Network")
-
-selectNodes(c("drug"), by.col = 'CTL.type')
+# Remove investigational, illicit, and withdrawn compounds, and apply visual style
+selectNodes(c("investigational", "illicit", "withdrawn"), by.col = "CTL.groups")
+deleteSelectedNodes()
+selectNodes(c("drug"), by.col = "CTL.type")
 selectFirstNeighbors(direction = "outgoing")
+selectFirstNeighbors()
 invertNodeSelection()
-
 deleteSelectedNodes()
 layoutNetwork()
 
+# Load a predefined visualization style for the network
+vizstyle.file <- file.path(getwd(), "styles.xml")
+LoadStyle.cmd <- paste('vizmap load file file="', vizstyle.file, '"', sep = "")
+commandsRun(LoadStyle.cmd)
+setVisualStyle("CTL Disease Compound Network")
 ```
 
-```
 
 
-
-```{r}
+```{r differential expression, echo=FALSE}
 # Create the DESeqDataSet
-dds <- DESeqDataSetFromMatrix(countData = round(as.matrix(expr_data)),
-                               colData = subject_info,
-                               design = ~ disease.state)  # Adjust the design formula as necessary
-
-# Pre-filtering to remove rows with very low counts (optional but recommended)
-dds <- dds[rowSums(counts(dds)) > 10, ]
+dds <- DESeqDataSetFromMatrix(
+  countData = round(as.matrix(expr_data)),
+  colData = subject_info,
+  design = ~disease.state
+)
 
 dds <- DESeq(dds)
 
-results <- results(dds, pAdjustMethod= 'fdr')
+results <- results(dds, pAdjustMethod = "fdr")
 summary(results)
 results <- as.data.frame(results)
 
 results$isDEG <- ifelse(results$padj < 0.05, "UpDEG", "Not DEG")
 results$isDEG <- ifelse(results$log2FoldChange < 0 & results$isDEG == "UpDEG", "DownDEG", results$isDEG)
-
-
-# Load the package
-library(writexl)
 
 # Filter the results
 results <- results %>%
@@ -341,45 +363,36 @@ results <- results %>%
 # Save the results as an Excel file
 write_xlsx(results, "filtered_results.xlsx")
 
-degs <- file.path(getwd(), "filtered_results.xlsx")
-import.table1.cmd = paste('table import file file="',degs,'"  KeyColumnForMappingNetworkList="display name" keyColumnIndex=1 startLoadRow=1 firstRowAsColumnNames=true', sep="")
-commandsRun(import.table1.cmd)
-
-selectNodes(c("initial"), by.col = 'CTL.type')
-genes <- getSelectedNodes()
-clearSelection()
-
-genes <- gsub("9606\\.", "", genes)
-
-library(org.Hs.eg.db)
-library(clusterProfiler)
-
-# Convert ENSP to ENSG
-sig_gene_converted <- bitr(results$gene_name, 
-                            fromType="SYMBOL",  # Change this to the correct type for protein
-                            toType="ENSEMBLPROT",
-                            OrgDb=org.Hs.eg.db)
-
-# Filter the original sig_gene for matching ENSG IDs
-matching_genes <- sig_gene %>%
-  filter(ENSEMBL %in% sig_gene_converted$ENSEMBL)
-
-# View the matching genes
-print(matching_genes)
-
 # Create the volcano plot with custom y-axis range
 volcano_plot <- ggplot(results, aes(x = log2FoldChange, y = -log10(padj), color = isDEG)) +
   geom_point(size = 0.8) +
   scale_color_manual(values = c("UpDEG" = "red", "DownDEG" = "blue", "Not DEG" = "black")) +
-  labs(x = "log2 Fold Change", y = "-log10(adjusted p-value)", title = "DEGs: padj < 0.01", color = "") 
+  labs(x = "log2 Fold Change", y = "-log10(adjusted p-value)", title = "DEGs: padj < 0.01", color = "")
 
-       
+
 # Display the plot
 print(volcano_plot)
 
 degs <- results %>%
-  filter(padj < 0.01)
+  filter(padj < 0.05)
 
 # Filtering expression data for DEGs using row names
 degs_exp <- as.data.frame(expr_data[rownames(expr_data) %in% rownames(degs), ])
+
+# Enrich analysis
+results_module <- results %>%
+  filter(gene_name %in% genes.green)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Prepare gene list and map symbols to ENTREZ IDs
+gene_symbols <- results_module$gene_name
+gene_entrez <- bitr(gene_symbols, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_entrez_ids <- unique(gene_entrez$ENTREZID)
+
+# Perform KEGG pathway enrichment analysis
+kegg_results <- enrichKEGG(gene = gene_entrez_ids, organism = "hsa", pvalueCutoff = 0.05)
+
+# Visualize top 10 KEGG pathways
+dotplot(kegg_results, showCategory = 1)
 ```
