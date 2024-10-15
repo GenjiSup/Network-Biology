@@ -6,6 +6,7 @@ output: html_document
 data: https://www.ncbi.nlm.nih.gov/sites/GDSbrowser?acc=GDS2821
 ---
 
+# 0. Setup
 ```{r setup, include=FALSE}
 # List of required packages
 required_packages <- c(
@@ -47,6 +48,7 @@ subject_info <- Columns(gds_data)
 ```
 
 
+# 1. Data Filtering
 ```{r data filtering, echo=FALSE}
 # Ensure unique identifiers and prepare expression data
 expr_data <- expression_data[!duplicated(expression_data$IDENTIFIER), ]
@@ -99,7 +101,7 @@ collectGarbage()
 ```
 
 
-
+# 2. Clustering plot
 ```{r clustering of the samples, echo=FALSE}
 # Cluster the samples based on expression data using hierarchical clustering
 sampleTree <- hclust(dist(data_filtered), method = "average")
@@ -115,7 +117,7 @@ plotDendroAndColors(sampleTree, traitColors,
 ```
 
 
-
+# 3. Power selection
 ```{r plots for power selction, echo=FALSE}
 # Choose a set of soft-thresholding powers for network construction
 powers <- seq(1, 15, by = 2)
@@ -149,7 +151,7 @@ text(sft$fitIndices[, 1], sft$fitIndices[, 5], labels = powers, cex = cex1, col 
 ```
 
 
-
+# 4. WGCNA
 ```{r WGCNA, echo=FALSE}
 # Perform WGCNA with the selected power and blockwise modules approach
 net <- blockwiseModules(data_filtered,
@@ -165,6 +167,7 @@ save(net, file = "WGCNA-net.RData")
 ```
 
 
+# 4.1 Results from WGCNA
 ```{r WGCNA dendrogram, echo=FALSE}
 # Load the saved network data
 load(file = "WGCNA-net.RData")
@@ -187,7 +190,7 @@ geneTree <- net$dendrograms[[1]]
 ```
 
 
-
+# 4.2 MEs
 ```{r MEs, echo=FALSE}
 # Define numbers of genes and samples
 nGenes <- ncol(data_filtered) # Number of genes
@@ -202,6 +205,8 @@ moduleTraitCor <- cor(MEs, datTraits, use = "p")
 moduleTraitPvalue <- corPvalueStudent(moduleTraitCor, nSamples)
 ```
 
+
+# 4.3 Top 3 Modules
 ```{r top 3, echo=FALSE}
 # Get the top 3 modules most correlated with 'disease.state'
 top_3_indices <- order(abs(moduleTraitCor[, "disease.state"]), decreasing = TRUE)[1:3]
@@ -219,6 +224,7 @@ for (i in 1:3) {
 ```
 
 
+# 4.4 Gene correlation to disease
 ```{r gene-disease correlation, echo=FALSE}
 # Calculate gene-module membership and gene-trait significance
 disease <- as.data.frame(datTraits$disease.state)
@@ -242,7 +248,7 @@ names(GSPvalue) <- paste("p.GS.", names(disease), sep = "")
 ```
 
 
-
+# 4.5 Plots of the Top 3 Modules
 ```{r plot the correlations top 3, echo=FALSE}
 # Plot module membership vs. gene significance for selected modules
 modules <- c("green", "steelblue", "grey60")
@@ -265,6 +271,7 @@ for (module in modules) {
 ```
 
 
+# 4.6 Final Dataframe
 ```{r final dataframe, echo=FALSE}
 # Create a data frame with gene information, including module membership and significance
 geneInfo0 <- data.frame(
@@ -296,6 +303,7 @@ geneInfo <- geneInfo0[geneOrder, ]
 ```
 
 
+# 5. Cytoscape
 ```{r cytoscape, echo=FALSE}
 # Cytoscape commands to analyze and visualize protein-protein interaction (PPI) network
 RCy3::cytoscapePing()
@@ -337,7 +345,7 @@ setVisualStyle("CTL Disease Compound Network")
 ```
 
 
-
+# 6. Differential Analysis
 ```{r differential expression, echo=FALSE}
 # Create the DESeqDataSet
 dds <- DESeqDataSetFromMatrix(
