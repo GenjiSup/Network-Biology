@@ -69,7 +69,7 @@ expr_data <- expr_data[rowSums(expr_data) > 10, ]
 
 # Prepare subject info and clean it
 rownames(subject_info) <- subject_info$sample
-subject_info <- subject_info[, -1]
+# subject_info <- subject_info[, -1]
 
 # Check for good samples and genes
 gsg <- goodSamplesGenes(expr_data, verbose = 10000)
@@ -332,7 +332,7 @@ selectNodes(c("investigational", "illicit", "withdrawn"), by.col = "CTL.groups")
 deleteSelectedNodes()
 selectNodes(c("drug"), by.col = "CTL.type")
 selectFirstNeighbors(direction = "outgoing")
-selectFirstNeighbors()
+# selectFirstNeighbors() # Comment in this line for the larger network
 invertNodeSelection()
 deleteSelectedNodes()
 layoutNetwork()
@@ -375,32 +375,20 @@ write_xlsx(results, "filtered_results.xlsx")
 volcano_plot <- ggplot(results, aes(x = log2FoldChange, y = -log10(padj), color = isDEG)) +
   geom_point(size = 0.8) +
   scale_color_manual(values = c("UpDEG" = "red", "DownDEG" = "blue", "Not DEG" = "black")) +
-  labs(x = "log2 Fold Change", y = "-log10(adjusted p-value)", title = "DEGs: padj < 0.01", color = "")
+  labs(x = "log2 Fold Change", y = "-log10(adjusted p-value)", title = "DEGs: padj < 0.05", color = "")
 
 
 # Display the plot
 print(volcano_plot)
 
+# Create a dataframe to store the significant genes
 degs <- results %>%
   filter(padj < 0.05)
+
+# Check significant genes in the green module
+sum(rownames(degs) %in% genes.green)
 
 # Filtering expression data for DEGs using row names
 degs_exp <- as.data.frame(expr_data[rownames(expr_data) %in% rownames(degs), ])
 
-# Enrich analysis
-results_module <- results %>%
-  filter(gene_name %in% genes.green)
-library(clusterProfiler)
-library(org.Hs.eg.db)
-
-# Prepare gene list and map symbols to ENTREZ IDs
-gene_symbols <- results_module$gene_name
-gene_entrez <- bitr(gene_symbols, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)
-gene_entrez_ids <- unique(gene_entrez$ENTREZID)
-
-# Perform KEGG pathway enrichment analysis
-kegg_results <- enrichKEGG(gene = gene_entrez_ids, organism = "hsa", pvalueCutoff = 0.05)
-
-# Visualize top 10 KEGG pathways
-dotplot(kegg_results, showCategory = 1)
 ```
